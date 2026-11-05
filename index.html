@@ -93,6 +93,7 @@
     <div class="brand" id="brand">Facturación</div>
     <nav id="nav">
       <button data-v="facturas">Facturas</button>
+      <button data-v="gastos">Gastos</button>
       <button data-v="clientes">Clientes</button>
       <button data-v="productos">Productos</button>
       <button data-v="resumen">Resumen</button>
@@ -112,14 +113,20 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 function nuevoEstado() {
   return {
     empresa: { nombre: "", nif: "", direccion: "", cp: "", ciudad: "", provincia: "", email: "", telefono: "",
-               iban: "", serie: "F", ivaDefecto: 21, irpfDefecto: 0, diasVencimiento: 30,
-               pie: "Forma de pago: transferencia bancaria." },
-    clientes: [], productos: [], facturas: []
+               iban: "", serie: "F", ivaDefecto: 21, irpfDefecto: 15, diasVencimiento: 30,
+               pie: "Forma de pago: transferencia bancaria.", inicios: {} },
+    clientes: [], productos: [], facturas: [], gastos: []
   };
 }
+function normalizar(d) {
+  const n = Object.assign(nuevoEstado(), d);
+  n.empresa = Object.assign(nuevoEstado().empresa, d.empresa);
+  n.empresa.inicios = n.empresa.inicios || {};
+  ["clientes", "productos", "facturas", "gastos"].forEach(k => { if (!Array.isArray(n[k])) n[k] = []; });
+  return n;
+}
 let db;
-try { db = JSON.parse(localStorage.getItem(KEY)) || nuevoEstado(); } catch (e) { db = nuevoEstado(); }
-db.empresa = Object.assign(nuevoEstado().empresa, db.empresa);
+try { db = normalizar(JSON.parse(localStorage.getItem(KEY)) || {}); } catch (e) { db = nuevoEstado(); }
 function guardar() {
   try { localStorage.setItem(KEY, JSON.stringify(db)); }
   catch (e) { alert("No se han podido guardar los datos en este navegador. Exporta una copia de seguridad."); }
@@ -127,7 +134,9 @@ function guardar() {
 
 /* ================= Utilidades ================= */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const r2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const r2 = n => { n = Number(n) || 0; return Math.sign(n) * Math.round((Math.abs(n) + Number.EPSILON) * 100) / 100; };
+const CATEGORIAS = ["Suministros (luz, agua, gas)", "Teléfono e internet", "Alquiler", "Material y compras", "Software y servicios",
+  "Gestoría y asesoría", "Seguros", "Cuota de autónomos", "Transporte y vehículo", "Dietas", "Formación", "Publicidad", "Comisiones bancarias", "Otros"];
 const num = v => { const n = parseFloat(String(v).replace(",", ".")); return isFinite(n) ? n : 0; };
 const eur = n => new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(n || 0);
 const fecha = s => s ? s.split("-").reverse().join("/") : "";
@@ -137,7 +146,8 @@ const sumarDias = (iso, d) => { const f = new Date(iso + "T12:00:00"); f.setDate
 function codigo(f) { return `${f.serie}${f.fecha.slice(0, 4)}-${String(f.numero).padStart(4, "0")}`; }
 function siguienteNumero(serie, anio) {
   const nums = db.facturas.filter(f => f.serie === serie && f.fecha.slice(0, 4) === anio).map(f => f.numero);
-  return nums.length ? Math.max(...nums) + 1 : 1;
+  const inicio = Number(db.empresa.inicios[serie + anio]) || 1;
+  return Math.max(inicio, nums.length ? Math.max(...nums) + 1 : 1);
 }
 function calcular(f) {
   const porIva = {};
@@ -169,7 +179,7 @@ function render() {
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.v === vista || (vista.startsWith("factura") && b.dataset.v === "facturas")));
   $("#brand").textContent = db.empresa.nombre ? db.empresa.nombre + " · Facturación" : "Facturación";
   const app = $("#app");
-  ({ facturas: vFacturas, factura: vEditar, ver: vVer, clientes: vClientes, productos: vProductos, resumen: vResumen, ajustes: vAjustes })[vista](app);
+  ({ facturas: vFacturas, factura: vEditar, ver: vVer, gastos: vGastos, clientes: vClientes, productos: vProductos, resumen: vResumen, ajustes: vAjustes })[vista](app);
 }
 
 /* ================= Vista: lista de facturas ================= */
@@ -242,6 +252,8 @@ function vEditar(app) {
     <div class="toolbar"><h1 style="margin:0;margin-right:auto">${f.id ? "Editar" : "Nueva"} factura <span class="muted">${numeroPrevisto}</span></h1>
       <button class="btn" onclick="borrador=null; ${f.id ? `ir('ver','${f.id}')` : "ir('facturas')"}">Cancelar</button>
       <button class="btn primary" id="guardarF">Guardar factura</button></div>
+    ${f.rectifica ? `<div class="card" style="border-color:var(--warn);background:var(--warn-bg)"><b>Factura rectificativa</b> de la ${esc(f.rectifica.codigo)} (${fecha(f.rectifica.fecha)}).
+      <span class="note">Las líneas van en negativo para anular la original. Si solo corriges una parte, deja únicamente la diferencia. Indica el motivo en las notas.</span></div>` : ""}
     <div class="card"><div class="row">
       <div><label>Serie</label><input id="serie" value="${esc(f.serie)}" ${f.id ? "disabled" : ""}></div>
       <div><label>Fecha de emisión</label><input type="date" id="fecha" value="${f.fecha}" ${f.id ? "disabled" : ""}></div>
@@ -358,6 +370,7 @@ function vVer(app) {
       <span class="tag ${e}" style="margin-right:auto">${etiqueta[e]}</span>
       ${f.estado === "pendiente" ? `<button class="btn" id="pagar">Marcar como pagada</button>` : ""}
       <button class="btn" id="dup">Duplicar</button>
+      ${!f.rectifica && f.estado !== "anulada" ? `<button class="btn" id="rect">Rectificar</button>` : ""}
       <button class="btn" onclick="borrador=null; ir('factura','${f.id}')">Editar</button>
       ${f.cliente.email ? `<a class="btn" style="text-decoration:none" href="mailto:${esc(f.cliente.email)}?subject=${encodeURIComponent("Factura " + codigo(f))}&body=${encodeURIComponent(`Hola,\n\nTe adjunto la factura ${codigo(f)} por importe de ${eur(c.total)}.\n\nUn saludo,\n${E.nombre}`)}">Email</a>` : ""}
       <button class="btn primary" onclick="window.print()">Imprimir / PDF</button>
@@ -365,8 +378,9 @@ function vVer(app) {
     </div>
     <div class="doc">
       <div class="head">
-        <div><h1>FACTURA${f.estado === "anulada" ? " (ANULADA)" : ""}</h1>
-          <div style="margin-top:8px"><b>Nº ${codigo(f)}</b><br>Fecha: ${fecha(f.fecha)}${f.vencimiento ? `<br>Vencimiento: ${fecha(f.vencimiento)}` : ""}</div></div>
+        <div><h1>${f.rectifica ? "FACTURA RECTIFICATIVA" : "FACTURA"}${f.estado === "anulada" ? " (ANULADA)" : ""}</h1>
+          <div style="margin-top:8px"><b>Nº ${codigo(f)}</b><br>Fecha: ${fecha(f.fecha)}${f.vencimiento ? `<br>Vencimiento: ${fecha(f.vencimiento)}` : ""}
+          ${f.rectifica ? `<br>Rectifica a la factura <b>${esc(f.rectifica.codigo)}</b> de ${fecha(f.rectifica.fecha)}` : ""}</div></div>
         <div style="text-align:right"><b style="font-size:15px">${esc(E.nombre)}</b><br>NIF: ${esc(E.nif)}<br>${esc(E.direccion)}<br>${esc([E.cp, E.ciudad].filter(Boolean).join(" "))}${E.provincia ? ` (${esc(E.provincia)})` : ""}
           ${E.telefono ? `<br>${esc(E.telefono)}` : ""}${E.email ? `<br>${esc(E.email)}` : ""}</div>
       </div>
@@ -386,6 +400,15 @@ function vVer(app) {
   const p = $("#pagar"); if (p) p.onclick = () => { f.estado = "pagada"; f.fechaPago = hoy(); guardar(); render(); };
   $("#dup").onclick = () => {
     borrador = { ...JSON.parse(JSON.stringify(f)), id: null, numero: null, fecha: hoy(), vencimiento: sumarDias(hoy(), E.diasVencimiento), estado: "pendiente", _para: null };
+    delete borrador.fechaPago; delete borrador.rectifica; ir("factura");
+  };
+  const rc = $("#rect"); if (rc) rc.onclick = () => {
+    const previa = db.facturas.find(x => x.rectifica && x.rectifica.id === f.id);
+    if (previa && !confirm(`Esta factura ya tiene una rectificativa (${codigo(previa)}). ¿Crear otra?`)) return;
+    borrador = { ...JSON.parse(JSON.stringify(f)), id: null, numero: null, serie: "R", fecha: hoy(), vencimiento: hoy(), estado: "pendiente", _para: null,
+      rectifica: { id: f.id, codigo: codigo(f), fecha: f.fecha },
+      lineas: f.lineas.map(l => ({ ...l, cantidad: -num(l.cantidad) })),
+      notas: "Motivo de la rectificación: " };
     delete borrador.fechaPago; ir("factura");
   };
   const b = $("#borrar"); if (b) b.onclick = () => {
@@ -454,40 +477,138 @@ function vProductos(app) {
   app.querySelectorAll("tr.click").forEach(tr => tr.onclick = () => editar(tr.dataset.id));
 }
 
-/* ================= Vista: resumen trimestral ================= */
+/* ================= Vista: gastos ================= */
+function calcGasto(g) {
+  const d = num(g.deducible) / 100;
+  const cuota = r2(num(g.base) * num(g.iva) / 100);
+  return { cuota, total: r2(num(g.base) + cuota), baseDed: r2(num(g.base) * d), ivaDed: r2(cuota * d) };
+}
+let filtroG = { anio: String(new Date().getFullYear()), texto: "" };
+function vGastos(app) {
+  const editar = id => {
+    const ult = db.gastos.slice().sort((a, b) => b.fecha.localeCompare(a.fecha))[0];
+    const g = db.gastos.find(x => x.id === id) || { id: null, fecha: hoy(), proveedor: "", nif: "", numero: "", categoria: "Material y compras", concepto: "", base: "", iva: 21, deducible: 100 };
+    const proveedores = [...new Map(db.gastos.map(x => [x.proveedor, x])).values()];
+    app.innerHTML = `<h1>${g.id ? "Editar" : "Nuevo"} gasto</h1><div class="card"><div class="row">
+      <div><label>Fecha de la factura</label><input type="date" id="gf" value="${g.fecha}"></div>
+      <div style="flex-basis:260px"><label>Proveedor *</label><input id="gp" list="dlProv" value="${esc(g.proveedor)}"></div>
+      <div><label>NIF proveedor</label><input id="gn" value="${esc(g.nif)}"></div>
+      <div><label>Nº de su factura</label><input id="gnum" value="${esc(g.numero)}"></div>
+      <div style="flex-basis:260px"><label>Categoría</label><select id="gc">${CATEGORIAS.map(c => `<option ${c === g.categoria ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+      <div style="flex-basis:100%"><label>Concepto</label><input id="gco" value="${esc(g.concepto)}"></div>
+      <div><label>Base imponible (sin IVA) € *</label><input id="gb" inputmode="decimal" value="${g.base}"></div>
+      <div><label>IVA %</label><select id="gi">${[21, 10, 4, 0].map(v => `<option ${v === num(g.iva) ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+      <div><label>% deducible</label><input id="gd" inputmode="decimal" value="${g.deducible}"></div>
+      </div>
+      <datalist id="dlProv">${proveedores.map(p => `<option value="${esc(p.proveedor)}">`).join("")}</datalist>
+      <p class="note" id="gres"></p>
+      <p class="note">% deducible: 100 % si es solo para la actividad. Si trabajas en casa, en los suministros se suele deducir el 30 % de la parte proporcional de la vivienda; en el vehículo, normalmente el 50 % del IVA. Confírmalo con tu gestor.</p>
+      <div class="toolbar" style="margin:16px 0 0"><button class="btn primary" id="ok">Guardar</button><button class="btn" id="no">Cancelar</button>
+      ${g.id ? `<button class="btn danger" id="del" style="margin-left:auto">Eliminar</button>` : ""}</div></div>`;
+    const leer = () => ({ fecha: $("#gf").value || hoy(), proveedor: $("#gp").value.trim(), nif: $("#gn").value.trim(), numero: $("#gnum").value.trim(),
+      categoria: $("#gc").value, concepto: $("#gco").value.trim(), base: num($("#gb").value), iva: num($("#gi").value), deducible: Math.min(100, Math.max(0, num($("#gd").value))) });
+    const pintar = () => { const c = calcGasto(leer()); $("#gres").innerHTML = `IVA: <b>${eur(c.cuota)}</b> · Total factura: <b>${eur(c.total)}</b> · Gasto deducible: <b>${eur(c.baseDed)}</b> · IVA deducible: <b>${eur(c.ivaDed)}</b>`; };
+    app.querySelectorAll("input,select").forEach(i => i.addEventListener("input", pintar)); pintar();
+    $("#gp").onchange = () => { const p = proveedores.find(x => x.proveedor === $("#gp").value); if (p && !g.id) { $("#gn").value = p.nif; $("#gc").value = p.categoria; $("#gi").value = p.iva; $("#gd").value = p.deducible; pintar(); } };
+    $("#gc").onchange = () => { if ($("#gc").value === "Cuota de autónomos") { $("#gi").value = 0; pintar(); } };
+    $("#no").onclick = () => vGastos(app);
+    $("#ok").onclick = () => {
+      const d = leer();
+      if (!d.proveedor) return alert("Indica el proveedor.");
+      if (!d.base) return alert("Indica la base imponible.");
+      if (g.id) Object.assign(g, d); else db.gastos.push({ id: uid(), ...d });
+      filtroG.anio = d.fecha.slice(0, 4); guardar(); vGastos(app);
+    };
+    const del = $("#del"); if (del) del.onclick = () => { if (confirm("¿Eliminar este gasto?")) { db.gastos = db.gastos.filter(x => x.id !== g.id); guardar(); vGastos(app); } };
+  };
+  const anios = [...new Set(db.gastos.map(g => g.fecha.slice(0, 4)).concat(filtroG.anio))].sort().reverse();
+  const t = filtroG.texto.toLowerCase();
+  const lista = db.gastos.filter(g => g.fecha.slice(0, 4) === filtroG.anio && (!t || (g.proveedor + " " + g.concepto + " " + g.categoria).toLowerCase().includes(t)))
+    .sort((a, b) => b.fecha.localeCompare(a.fecha));
+  const cs = lista.map(calcGasto), S = k => r2(cs.reduce((s, c) => s + c[k], 0));
+  app.innerHTML = `<div class="toolbar"><h1 style="margin:0;margin-right:auto">Gastos</h1><button class="btn primary" id="nuevo">+ Nuevo gasto</button></div>
+    <div class="stats">
+      <div class="stat"><div class="k">Total pagado ${filtroG.anio}</div><div class="v">${eur(S("total"))}</div></div>
+      <div class="stat"><div class="k">Gasto deducible</div><div class="v">${eur(S("baseDed"))}</div></div>
+      <div class="stat"><div class="k">IVA soportado deducible</div><div class="v">${eur(S("ivaDed"))}</div></div>
+      <div class="stat"><div class="k">Nº de gastos</div><div class="v">${lista.length}</div></div></div>
+    <div class="card"><div class="toolbar">
+      <input class="grow" id="gt" placeholder="Buscar proveedor, concepto o categoría…" value="${esc(filtroG.texto)}">
+      <select id="ga" style="width:auto">${anios.map(a => `<option ${a === filtroG.anio ? "selected" : ""}>${a}</option>`).join("")}</select></div>
+    ${lista.length ? `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Categoría</th><th class="num">Base</th><th class="num">IVA</th><th class="num">Total</th><th class="num">Deducible</th></tr></thead><tbody>
+      ${lista.map((g, i) => `<tr class="click" data-id="${g.id}"><td>${fecha(g.fecha)}</td><td><b>${esc(g.proveedor)}</b>${g.concepto ? `<br><span class="note">${esc(g.concepto)}</span>` : ""}</td>
+        <td>${esc(g.categoria)}</td><td class="num">${eur(g.base)}</td><td class="num">${eur(cs[i].cuota)}</td><td class="num">${eur(cs[i].total)}</td><td class="num">${g.deducible}%</td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty">No hay gastos en ${filtroG.anio}. Apunta aquí las facturas que te hacen tus proveedores: sirven para pagar menos IVA e IRPF.</div>`}</div>`;
+  $("#nuevo").onclick = () => editar(null);
+  $("#ga").onchange = e => { filtroG.anio = e.target.value; vGastos(app); };
+  $("#gt").oninput = e => { filtroG.texto = e.target.value; const p = e.target.selectionStart; vGastos(app); const i = $("#gt"); i.focus(); i.setSelectionRange(p, p); };
+  app.querySelectorAll("tr.click").forEach(tr => tr.onclick = () => editar(tr.dataset.id));
+}
+
+/* ================= Vista: resumen e impuestos ================= */
 let anioResumen = String(new Date().getFullYear());
-function vResumen(app) {
-  const anios = [...new Set(db.facturas.map(f => f.fecha.slice(0, 4)).concat(anioResumen))].sort().reverse();
-  const fs = db.facturas.filter(f => f.fecha.slice(0, 4) === anioResumen && f.estado !== "anulada");
-  const trim = [1, 2, 3, 4].map(t => {
-    const q = fs.filter(f => Math.ceil(Number(f.fecha.slice(5, 7)) / 3) === t).map(calcular);
+function impuestos(anio) {
+  const fs = db.facturas.filter(f => f.fecha.slice(0, 4) === anio && f.estado !== "anulada");
+  const gs = db.gastos.filter(g => g.fecha.slice(0, 4) === anio);
+  const tri = iso => Math.ceil(Number(iso.slice(5, 7)) / 3);
+  let acIng = 0, acGas = 0, acRet = 0, pagados = 0;
+  return [1, 2, 3, 4].map(t => {
+    const q = fs.filter(f => tri(f.fecha) === t).map(calcular);
+    const g = gs.filter(x => tri(x.fecha) === t).map(calcGasto);
     const ivas = {};
     q.forEach(c => c.desglose.forEach(d => { ivas[d.iva] = ivas[d.iva] || { base: 0, cuota: 0 }; ivas[d.iva].base = r2(ivas[d.iva].base + d.base); ivas[d.iva].cuota = r2(ivas[d.iva].cuota + d.cuota); }));
-    return { t, n: q.length, base: r2(q.reduce((s, c) => s + c.base, 0)), iva: r2(q.reduce((s, c) => s + c.iva, 0)), irpf: r2(q.reduce((s, c) => s + c.irpf, 0)), total: r2(q.reduce((s, c) => s + c.total, 0)), ivas };
+    const S = (arr, k) => r2(arr.reduce((s, c) => s + c[k], 0));
+    const x = { t, n: q.length, base: S(q, "base"), iva: S(q, "iva"), irpf: S(q, "irpf"), total: S(q, "total"), ivas,
+      gastos: S(g, "baseDed"), ivaSop: S(g, "ivaDed"), nG: g.length };
+    x.m303 = r2(x.iva - x.ivaSop);
+    // Modelo 130 (estimación directa): acumulado desde el 1 de enero
+    acIng = r2(acIng + x.base); acGas = r2(acGas + x.gastos); acRet = r2(acRet + x.irpf);
+    x.rend = r2(acIng - acGas);
+    x.c130 = { ing: acIng, gas: acGas, rend: x.rend, veinte: r2(Math.max(0, x.rend) * 0.2), ret: acRet, previos: pagados };
+    x.m130 = r2(x.c130.veinte - acRet - pagados);
+    if (x.m130 > 0) pagados = r2(pagados + x.m130);
+    return x;
   });
+}
+function vResumen(app) {
+  const anios = [...new Set(db.facturas.map(f => f.fecha.slice(0, 4)).concat(db.gastos.map(g => g.fecha.slice(0, 4)), anioResumen))].sort().reverse();
+  const trim = impuestos(anioResumen);
   const T = k => r2(trim.reduce((s, x) => s + x[k], 0));
-  app.innerHTML = `<div class="toolbar"><h1 style="margin:0;margin-right:auto">Resumen</h1>
+  const res = v => v > 0 ? `<b>${eur(v)}</b><br><span class="note">a ingresar</span>` : v < 0 ? `${eur(-v)}<br><span class="note">a compensar</span>` : eur(0);
+  const res130 = v => v > 0 ? `<b>${eur(v)}</b><br><span class="note">a ingresar</span>` : `${eur(0)}<br><span class="note">${v < 0 ? "negativa" : "sin actividad"}</span>`;
+  const plazos = ["1 – 20 de abril", "1 – 20 de julio", "1 – 20 de octubre", "1 – 30 de enero"];
+  const pctRet = T("base") ? Math.round(T("irpf") / T("base") * 100) : 0;
+  app.innerHTML = `<div class="toolbar"><h1 style="margin:0;margin-right:auto">Resumen e impuestos</h1>
       <select id="anio" style="width:auto">${anios.map(a => `<option ${a === anioResumen ? "selected" : ""}>${a}</option>`).join("")}</select>
-      <button class="btn" id="csv">Exportar CSV</button></div>
+      <button class="btn" id="csvI">Libro de ingresos (CSV)</button><button class="btn" id="csvG">Libro de gastos (CSV)</button></div>
     <div class="stats">
-      <div class="stat"><div class="k">Base imponible ${anioResumen}</div><div class="v">${eur(T("base"))}</div></div>
-      <div class="stat"><div class="k">IVA repercutido</div><div class="v">${eur(T("iva"))}</div></div>
-      <div class="stat"><div class="k">IRPF retenido</div><div class="v">${eur(T("irpf"))}</div></div>
-      <div class="stat"><div class="k">Total facturado</div><div class="v">${eur(T("total"))}</div></div></div>
-    <div class="card"><h2>Por trimestre</h2><div class="table-wrap"><table>
-      <thead><tr><th>Trimestre</th><th class="num">Facturas</th><th class="num">Base</th><th>Desglose IVA</th><th class="num">IVA</th><th class="num">IRPF</th><th class="num">Total</th></tr></thead><tbody>
-      ${trim.map(x => `<tr><td><b>${x.t}T</b></td><td class="num">${x.n}</td><td class="num">${eur(x.base)}</td>
-        <td class="muted" style="font-size:13px">${Object.keys(x.ivas).sort((a, b) => b - a).map(k => `${k}%: ${eur(x.ivas[k].base)} → ${eur(x.ivas[k].cuota)}`).join("<br>") || "—"}</td>
-        <td class="num">${eur(x.iva)}</td><td class="num">${eur(x.irpf)}</td><td class="num"><b>${eur(x.total)}</b></td></tr>`).join("")}
+      <div class="stat"><div class="k">Ingresos (base) ${anioResumen}</div><div class="v">${eur(T("base"))}</div></div>
+      <div class="stat"><div class="k">Gastos deducibles</div><div class="v">${eur(T("gastos"))}</div></div>
+      <div class="stat"><div class="k">Rendimiento neto</div><div class="v">${eur(r2(T("base") - T("gastos")))}</div></div>
+      <div class="stat"><div class="k">IRPF que te han retenido</div><div class="v">${eur(T("irpf"))}</div></div></div>
+    <div class="card"><h2>Modelo 303 · IVA trimestral</h2><div class="table-wrap"><table>
+      <thead><tr><th>Trimestre</th><th>IVA repercutido (ventas)</th><th class="num">Total repercutido</th><th class="num">IVA soportado deducible</th><th class="num">Resultado</th><th>Plazo</th></tr></thead><tbody>
+      ${trim.map(x => `<tr><td><b>${x.t}T</b></td>
+        <td class="note">${Object.keys(x.ivas).filter(k => x.ivas[k].base).sort((a, b) => b - a).map(k => `${k}%: base ${eur(x.ivas[k].base)} → ${eur(x.ivas[k].cuota)}`).join("<br>") || "—"}</td>
+        <td class="num">${eur(x.iva)}</td><td class="num">${eur(x.ivaSop)}</td><td class="num">${res(x.m303)}</td><td class="note">${plazos[x.t - 1]}</td></tr>`).join("")}
       </tbody></table></div>
-      <p class="note">Datos útiles para el modelo 303 (IVA) y, si aplicas retención, para tu declaración. Compruébalos siempre con tu gestor.</p></div>`;
+      <p class="note">Si un trimestre sale «a compensar», el importe se descuenta en los siguientes. En el 4T puedes pedir la devolución.</p></div>
+    <div class="card"><h2>Modelo 130 · pago fraccionado de IRPF</h2><div class="table-wrap"><table>
+      <thead><tr><th>Trimestre</th><th class="num">Ingresos acumulados</th><th class="num">Gastos acumulados</th><th class="num">Rendimiento</th><th class="num">20 %</th><th class="num">− Retenciones</th><th class="num">− Pagos anteriores</th><th class="num">Resultado</th></tr></thead><tbody>
+      ${trim.map(x => `<tr><td><b>${x.t}T</b></td><td class="num">${eur(x.c130.ing)}</td><td class="num">${eur(x.c130.gas)}</td><td class="num">${eur(x.c130.rend)}</td>
+        <td class="num">${eur(x.c130.veinte)}</td><td class="num">${eur(x.c130.ret)}</td><td class="num">${eur(x.c130.previos)}</td><td class="num">${res130(x.m130)}</td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="note">Cálculo en estimación directa con datos acumulados del año. ${pctRet >= 10 ? `<b>Ojo:</b> te retienen IRPF en la mayoría de tus facturas. Si en el año anterior más del 70 % de tus ingresos llevaron retención, no tienes que presentar el 130.` : ""}
+      No incluye la cuota de gastos de difícil justificación ni otros ajustes.</p></div>
+    <p class="note">Estos cálculos son orientativos. Revísalos con tu gestor antes de presentar los modelos.</p>`;
   $("#anio").onchange = e => { anioResumen = e.target.value; vResumen(app); };
-  $("#csv").onclick = () => {
-    const filas = [["Numero", "Fecha", "Cliente", "NIF cliente", "Base", "IVA", "IRPF", "Total", "Estado"]].concat(
-      db.facturas.filter(f => f.fecha.slice(0, 4) === anioResumen).sort((a, b) => a.numero - b.numero).map(f => { const c = calcular(f);
-        return [codigo(f), fecha(f.fecha), f.cliente.nombre, f.cliente.nif, c.base, c.iva, c.irpf, c.total, etiqueta[estadoDe(f)]].map(v => typeof v === "number" ? String(v).replace(".", ",") : v); }));
-    descargar(`facturas-${anioResumen}.csv`, "﻿" + filas.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\n"), "text/csv");
-  };
+  const csv = (nombre, filas) => descargar(nombre, "﻿" + filas.map(r => r.map(v => `"${String(typeof v === "number" ? String(v).replace(".", ",") : v ?? "").replace(/"/g, '""')}"`).join(";")).join("\n"), "text/csv");
+  $("#csvI").onclick = () => csv(`libro-ingresos-${anioResumen}.csv`, [["Número", "Fecha", "Cliente", "NIF cliente", "Base", "IVA", "IRPF", "Total", "Estado", "Rectifica a"]].concat(
+    db.facturas.filter(f => f.fecha.slice(0, 4) === anioResumen).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.numero - b.numero).map(f => { const c = calcular(f);
+      return [codigo(f), fecha(f.fecha), f.cliente.nombre, f.cliente.nif, c.base, c.iva, c.irpf, c.total, etiqueta[estadoDe(f)], f.rectifica ? f.rectifica.codigo : ""]; })));
+  $("#csvG").onclick = () => csv(`libro-gastos-${anioResumen}.csv`, [["Fecha", "Proveedor", "NIF", "Nº factura", "Categoría", "Concepto", "Base", "IVA %", "Cuota IVA", "Total", "% deducible", "Gasto deducible", "IVA deducible"]].concat(
+    db.gastos.filter(g => g.fecha.slice(0, 4) === anioResumen).sort((a, b) => a.fecha.localeCompare(b.fecha)).map(g => { const c = calcGasto(g);
+      return [fecha(g.fecha), g.proveedor, g.nif, g.numero, g.categoria, g.concepto, g.base, g.iva, c.cuota, c.total, g.deducible, c.baseDed, c.ivaDed]; })));
 }
 
 /* ================= Vista: ajustes / mis datos ================= */
@@ -496,18 +617,125 @@ function descargar(nombre, contenido, tipo) {
   a.href = URL.createObjectURL(new Blob([contenido], { type: tipo }));
   a.download = nombre; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+/* ---- Importar desde Holded (Excel o CSV) ---- */
+const norm = s => String(s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim();
+const numES = v => {
+  if (typeof v === "number") return v;
+  let s = String(v ?? "").replace(/[€%\s]/g, "");
+  if (s.includes(",") && s.includes(".")) s = s.replace(/\./g, "");
+  return num(s.replace(",", "."));
+};
+function columna(fila, nombres, excluir = []) {
+  const claves = Object.keys(fila).filter(k => !excluir.some(x => norm(k).includes(x)));
+  for (const n of nombres) { const k = claves.find(k => norm(k) === n); if (k !== undefined && String(fila[k]).trim() !== "") return String(fila[k]).trim(); }
+  for (const n of nombres) { const k = claves.find(k => norm(k).includes(n)); if (k !== undefined && String(fila[k]).trim() !== "") return String(fila[k]).trim(); }
+  return "";
+}
+function cargarXLSX() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((ok, ko) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = ok; s.onerror = () => ko(new Error("Para leer archivos Excel hace falta conexión a internet. También puedes guardar el archivo como CSV."));
+    document.head.appendChild(s);
+  });
+}
+function parseCSV(texto) {
+  texto = texto.replace(/^﻿/, "");
+  const lineas = texto.split(/\r?\n/).filter(l => l.trim()).slice(0, 20).join("\n");
+  const sep = [";", ",", "\t"].map(s => [s, lineas.split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const filas = []; let fila = [], campo = "", comillas = false;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (comillas) {
+      if (c === '"' && texto[i + 1] === '"') { campo += '"'; i++; }
+      else if (c === '"') comillas = false;
+      else campo += c;
+    } else if (c === '"') comillas = true;
+    else if (c === sep) { fila.push(campo); campo = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && texto[i + 1] === "\n") i++; fila.push(campo); filas.push(fila); fila = []; campo = ""; }
+    else campo += c;
+  }
+  if (campo || fila.length) { fila.push(campo); filas.push(fila); }
+  return filas;
+}
+async function leerHoja(file) {
+  let filas;
+  if (/\.csv$/i.test(file.name) || file.type === "text/csv") {
+    const buf = await file.arrayBuffer();
+    let texto = new TextDecoder("utf-8").decode(buf);
+    if (texto.includes("�")) texto = new TextDecoder("windows-1252").decode(buf);
+    filas = parseCSV(texto);
+  } else {
+    await cargarXLSX();
+    const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+  }
+  // Holded a veces pone filas de título antes de la cabecera: busca la fila que parece cabecera
+  const i = filas.slice(0, 15).findIndex(r => r.some(c => ["nombre", "name", "producto", "contacto", "razon social"].includes(norm(c))));
+  const cab = filas[i < 0 ? 0 : i].map(c => String(c).trim());
+  return filas.slice((i < 0 ? 0 : i) + 1).filter(r => r.some(c => String(c).trim() !== "")).map(r => Object.fromEntries(cab.map((c, j) => [c || "col" + j, r[j]])));
+}
+async function importar(tipo, file) {
+  const filas = await leerHoja(file);
+  if (!filas.length) throw new Error("El archivo está vacío o no tiene el formato esperado.");
+  let nuevos = 0, repetidos = 0;
+  if (tipo === "clientes") {
+    for (const f of filas) {
+      const nombre = columna(f, ["nombre", "razon social", "name", "nombre fiscal", "empresa", "contacto"]);
+      if (!nombre) continue;
+      const nif = columna(f, ["nif", "cif", "nif/cif", "nif / cif", "dni", "vat", "vat number", "codigo fiscal", "id fiscal"]).toUpperCase();
+      const dir = [columna(f, ["direccion", "address", "domicilio"]), [columna(f, ["codigo postal", "cp", "postal code", "zip"]), columna(f, ["poblacion", "ciudad", "localidad", "city"])].filter(Boolean).join(" "),
+        columna(f, ["provincia", "province", "state"])].filter(Boolean).join(", ");
+      if (db.clientes.some(c => (nif && norm(c.nif) === norm(nif)) || norm(c.nombre) === norm(nombre))) { repetidos++; continue; }
+      db.clientes.push({ id: uid(), nombre, nif, direccion: dir, email: columna(f, ["email", "e-mail", "correo", "mail"]), telefono: columna(f, ["telefono", "movil", "phone", "mobile"]) });
+      nuevos++;
+    }
+  } else {
+    for (const f of filas) {
+      const nombre = columna(f, ["nombre", "producto", "name", "concepto", "descripcion"]);
+      if (!nombre) continue;
+      const precio = numES(columna(f, ["precio", "precio venta", "precio de venta", "price", "precio unitario", "subtotal", "pvp"], ["iva", "coste", "compra", "total"]));
+      let iva = numES(columna(f, ["iva", "% iva", "impuesto", "impuestos", "tax", "taxes"], ["precio", "price", "total"]));
+      if (iva > 0 && iva < 1) iva = r2(iva * 100);
+      if (![0, 4, 10, 21].includes(iva)) iva = db.empresa.ivaDefecto;
+      if (db.productos.some(p => norm(p.nombre) === norm(nombre))) { repetidos++; continue; }
+      db.productos.push({ id: uid(), nombre, precio: r2(precio), iva }); nuevos++;
+    }
+  }
+  guardar();
+  return `${nuevos} ${tipo} importados${repetidos ? `, ${repetidos} ya existían y se han omitido` : ""}.`;
+}
+
 function vAjustes(app) {
   const E = db.empresa;
+  const anio = String(new Date().getFullYear());
   const campo = (k, l, extra = "") => `<div ${extra}><label>${l}</label><input data-k="${k}" value="${esc(E[k])}"></div>`;
   app.innerHTML = `<h1>Mis datos</h1>
     <div class="card"><h2>Datos fiscales (aparecen en cada factura)</h2><div class="row">
-      ${campo("nombre", "Nombre o razón social *")}${campo("nif", "NIF / CIF *")}
+      ${campo("nombre", "Nombre y apellidos *")}${campo("nif", "NIF *")}
       ${campo("direccion", "Dirección", 'style="flex-basis:100%"')}${campo("cp", "Código postal")}${campo("ciudad", "Población")}${campo("provincia", "Provincia")}
       ${campo("email", "Email")}${campo("telefono", "Teléfono")}${campo("iban", "IBAN (para transferencias)", 'style="flex-basis:320px"')}</div></div>
     <div class="card"><h2>Preferencias</h2><div class="row">
-      ${campo("serie", "Serie de facturas")}${campo("ivaDefecto", "IVA por defecto %")}${campo("irpfDefecto", "IRPF por defecto % (0, 7 o 15)")}${campo("diasVencimiento", "Días hasta vencimiento")}
-      <div style="flex-basis:100%"><label>Texto al pie de la factura</label><textarea data-k="pie">${esc(E.pie)}</textarea></div></div></div>
+      ${campo("serie", "Serie de facturas")}
+      <div><label>IVA por defecto</label><select data-k="ivaDefecto">${[21, 10, 4, 0].map(v => `<option ${v === num(E.ivaDefecto) ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+      <div style="flex-basis:260px"><label>Retención IRPF por defecto</label><select data-k="irpfDefecto">
+        ${[[15, "15 % (general)"], [7, "7 % (nuevo autónomo: año de alta y 2 siguientes)"], [0, "0 % (clientes particulares)"]].map(([v, t]) => `<option value="${v}" ${v === num(E.irpfDefecto) ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+      ${campo("diasVencimiento", "Días hasta vencimiento")}
+      <div style="flex-basis:100%"><label>Texto al pie de la factura</label><textarea data-k="pie">${esc(E.pie)}</textarea></div></div>
+      <p class="note">La retención solo se aplica si facturas a empresas u otros autónomos. A particulares, no. Puedes cambiarla en cada factura.</p></div>
     <div class="toolbar"><button class="btn primary" id="ok">Guardar mis datos</button><span id="msg" class="note"></span></div>
+
+    <div class="card"><h2>Pasar de Holded a este programa</h2>
+      <p><b>1. Continuar la numeración.</b> Si este año ya hiciste facturas en Holded, pon aquí el número que toca ahora, para que no haya saltos ni repeticiones.</p>
+      <div class="row" style="max-width:520px"><div><label>Serie</label><input id="iniSerie" value="${esc(E.serie)}"></div>
+        <div><label>Próximo nº en ${anio}</label><input id="iniNum" inputmode="numeric" value="${siguienteNumero(E.serie, anio)}"></div>
+        <div style="flex:0 0 auto"><button class="btn" id="iniOk">Aplicar</button></div></div>
+      <p class="note" id="iniMsg">La próxima factura será la ${codigo({ serie: E.serie, fecha: anio, numero: siguienteNumero(E.serie, anio) })}. Las facturas antiguas se quedan en Holded: descárgalas en PDF antes de darte de baja.</p>
+      <p style="margin-top:18px"><b>2. Importar clientes y productos.</b> En Holded, entra en <i>Contactos</i> (o en <i>Inventario → Productos</i>) y usa <i>Exportar</i>. Después sube aquí el archivo Excel o CSV.</p>
+      <div class="toolbar"><button class="btn" id="impCli">Importar contactos…</button><button class="btn" id="impProd">Importar productos…</button>
+        <input type="file" id="fichH" accept=".xlsx,.xls,.csv" style="display:none"><span class="note" id="impMsg"></span></div></div>
+
     <div class="card"><h2>Copia de seguridad</h2>
       <p class="note">Los datos se guardan solo en este navegador y en este dispositivo. Descarga una copia con frecuencia: si borras los datos del navegador, se pierden.</p>
       <div class="toolbar"><button class="btn" id="exp">Descargar copia</button><button class="btn" id="imp">Restaurar copia…</button>
@@ -515,8 +743,25 @@ function vAjustes(app) {
   $("#ok").onclick = () => {
     app.querySelectorAll("[data-k]").forEach(i => { const k = i.dataset.k; E[k] = ["ivaDefecto", "irpfDefecto", "diasVencimiento"].includes(k) ? num(i.value) : i.value.trim(); });
     E.serie = E.serie || "F";
-    if (!E.nombre || !E.nif) { $("#msg").textContent = "Nombre y NIF son obligatorios."; return; }
+    if (!E.nombre || !E.nif) { $("#msg").textContent = "El nombre y el NIF son obligatorios."; return; }
     guardar(); render(); $("#msg").textContent = "Guardado ✓";
+  };
+  $("#iniOk").onclick = () => {
+    const serie = $("#iniSerie").value.trim() || "F", n = Math.floor(num($("#iniNum").value));
+    const usados = db.facturas.filter(f => f.serie === serie && f.fecha.slice(0, 4) === anio).map(f => f.numero);
+    if (n < 1) return alert("Indica un número válido.");
+    if (usados.length && n <= Math.max(...usados)) return alert(`Ya existe la factura ${codigo({ serie, fecha: anio, numero: Math.max(...usados) })} en este programa. El número tiene que ser mayor.`);
+    E.inicios[serie + anio] = n; guardar();
+    $("#iniMsg").textContent = `Hecho. La próxima factura de la serie ${serie} será la ${codigo({ serie, fecha: anio, numero: n })}.`;
+  };
+  let tipoImp = "clientes";
+  $("#impCli").onclick = () => { tipoImp = "clientes"; $("#fichH").click(); };
+  $("#impProd").onclick = () => { tipoImp = "productos"; $("#fichH").click(); };
+  $("#fichH").onchange = async e => {
+    const file = e.target.files[0]; e.target.value = ""; if (!file) return;
+    $("#impMsg").textContent = "Leyendo…";
+    try { $("#impMsg").textContent = await importar(tipoImp, file); }
+    catch (err) { $("#impMsg").textContent = ""; alert(err.message || "No se ha podido leer el archivo."); }
   };
   $("#exp").onclick = () => descargar(`facturacion-copia-${hoy()}.json`, JSON.stringify(db, null, 2), "application/json");
   $("#imp").onclick = () => $("#fich").click();
@@ -525,9 +770,8 @@ function vAjustes(app) {
     try {
       const d = JSON.parse(await file.text());
       if (!d || !Array.isArray(d.facturas) || !d.empresa) throw new Error();
-      if (!confirm(`La copia contiene ${d.facturas.length} facturas y ${(d.clientes || []).length} clientes. Sustituirá los datos actuales. ¿Continuar?`)) return;
-      db = Object.assign(nuevoEstado(), d); db.empresa = Object.assign(nuevoEstado().empresa, d.empresa);
-      guardar(); ir("facturas");
+      if (!confirm(`La copia contiene ${d.facturas.length} facturas, ${(d.gastos || []).length} gastos y ${(d.clientes || []).length} clientes. Sustituirá los datos actuales. ¿Continuar?`)) return;
+      db = normalizar(d); guardar(); ir("facturas");
     } catch (err) { alert("El archivo no es una copia válida."); }
   };
 }
