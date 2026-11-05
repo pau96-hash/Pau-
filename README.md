@@ -14,5 +14,5 @@ Aplicación de facturación sencilla en un solo archivo (`index.html`). No hace 
 
 ## Importante
 - Los datos se guardan **solo en el navegador y el dispositivo** donde lo uses. Descarga una copia de seguridad a menudo (en «Mis datos»).
-- Por eso, solo se puede eliminar la **última** factura de una serie, para no dejar huecos en la numeración. Las demás se marcan como «Anulada».
+- Solo se puede eliminar la **última** factura de una serie, para no dejar huecos en la numeración. Las demás se marcan como «Anulada».
 - Esta herramienta **no está certificada para VERI\*FACTU** (Reglamento de sistemas de facturación, RD 1007/2023). Cuando esa obligación empiece a aplicarse a tu caso, tendrás que usar un software adaptado o comprobarlo con tu gestor.
